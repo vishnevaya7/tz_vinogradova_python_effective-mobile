@@ -1,10 +1,12 @@
 # Система аутентификации и авторизации (ТЗ Effective Mobile)
 
 Кастомная RBAC-система на Django REST Framework + PostgreSQL.
+**Собственная токен-аутентификация** (без Django-сессий), **собственная модель пользователя** (AbstractBaseUser),
+**собственная схема прав доступа** (Role → RolePermission ← Resource + Action, M2M user-role).
 
 ---
 
-## 1. Быстрый старт 
+## 1. Быстрый старт
 
 ### Требования
 - Python 3.13+
@@ -13,7 +15,7 @@
 ### Установка и запуск
 
 ```bash
-# 1. Клонировать / открыть проект
+# 1. Перейти в проект
 cd tz_vinogradova_python_effective-mobile
 
 # 2. Создать виртуальное окружение и установить зависимости
@@ -30,7 +32,7 @@ docker run -d --name tz-postgres ^
 # 4. Применить миграции
 venv\Scripts\python manage.py migrate
 
-# 5. Загрузить тестовые данные 
+# 5. Загрузить тестовые данные
 venv\Scripts\python manage.py seed_data
 
 # 6. Запустить сервер
@@ -45,8 +47,8 @@ venv\Scripts\python manage.py runserver
 
 | Email | Роль | Пароль | Права |
 |---|---|---|---|
-| `admin@example.com` | admin | `password` | read / write / delete → document, report |
-| `manager@example.com` | manager | `password` | read / write → document, report |
+| `admin@example.com` | admin | `password` | read/write/delete → document, report, permissions |
+| `manager@example.com` | manager | `password` | read/write → document, report |
 | `user@example.com` | user | `password` | read → document, report |
 
 ---
@@ -63,52 +65,45 @@ curl -X POST http://127.0.0.1:8000/api/auth/register/ ^
 
 **Ожидаемый ответ:** `201 Created`
 ```json
-{"id":4,"email":"ivan@test.com","first_name":"Иван","last_name":"Петров"}
+{"message":"Регистрация успешна","user_id":4}
 ```
 
-### 3.2 Вход (login по email)
+### 3.2 Вход (login по email + паролю)
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/auth/login/ ^
   -H "Content-Type: application/json" ^
-  -d "{\"email\":\"admin@example.com\",\"password\":\"password\"}" ^
-  -c cookies.txt
+  -d "{\"email\":\"admin@example.com\",\"password\":\"password\"}"
 ```
 
 **Ожидаемый ответ:** `200 OK`
 ```json
-{"id":1,"email":"admin@example.com","first_name":"Админ","last_name":"Админов","role":1}
+{
+  "token":"a1b2c3...64_символа_hex",
+  "user":{"id":1,"email":"admin@example.com","first_name":"Админ","last_name":"Админов","is_active":true,...}
+}
+```
+
+Сохраните токен в переменную:
+```bash
+set TOKEN=a1b2c3...
 ```
 
 ### 3.3 Mock-объекты с доступом (admin)
 
 ```bash
-curl http://127.0.0.1:8000/api/documents/ -b cookies.txt
+curl http://127.0.0.1:8000/api/documents/ -H "Authorization: Token %TOKEN%"
 ```
 
 **Ожидаемый ответ:** `200 OK` — список из 3 документов
-```json
-[
-  {"id":1,"title":"Договор №1","status":"подписан"},
-  {"id":2,"title":"Счет-фактура №42","status":"оплачен"},
-  {"id":3,"title":"Акт приема-передачи","status":"на согласовании"}
-]
-```
 
 ```bash
-curl http://127.0.0.1:8000/api/reports/ -b cookies.txt
+curl http://127.0.0.1:8000/api/reports/ -H "Authorization: Token %TOKEN%"
 ```
 
 **Ожидаемый ответ:** `200 OK` — список из 3 отчётов
-```json
-[
-  {"id":1,"title":"Отчет по продажам Q1","author":"Иванов И.И."},
-  {"id":2,"title":"Финансовый отчет 2025","author":"Петров П.П."},
-  {"id":3,"title":"Анализ рынка","author":"Сидоров С.С."}
-]
-```
 
-### 3.4 401 — запрос без сессии
+### 3.4 401 — запрос без токена
 
 ```bash
 curl http://127.0.0.1:8000/api/documents/
@@ -116,34 +111,32 @@ curl http://127.0.0.1:8000/api/documents/
 
 **Ожидаемый ответ:** `401 Unauthorized`
 ```json
-{"detail":"Authentication credentials were not provided."}
+{"detail":"Учётные данные не предоставлены."}
 ```
 
 ### 3.5 403 — нет роли (пользователь только что зарегистрирован)
 
 ```bash
+# Логинимся новым пользователем (без роли)
 curl -X POST http://127.0.0.1:8000/api/auth/login/ ^
   -H "Content-Type: application/json" ^
-  -d "{\"email\":\"ivan@test.com\",\"password\":\"qwerty123\"}" ^
-  -c new_user.txt
+  -d "{\"email\":\"ivan@test.com\",\"password\":\"qwerty123\"}"
 
-curl http://127.0.0.1:8000/api/documents/ -b new_user.txt
+# Сохраняем токен и пытаемся получить документы
+curl http://127.0.0.1:8000/api/documents/ -H "Authorization: Token <token_ivan>"
 ```
 
 **Ожидаемый ответ:** `403 Forbidden`
-```json
-{"detail":"You do not have permission to perform this action."}
-```
 
 ### 3.6 403 — пользователь не может в админку
 
 ```bash
+# Логинимся как user
 curl -X POST http://127.0.0.1:8000/api/auth/login/ ^
   -H "Content-Type: application/json" ^
-  -d "{\"email\":\"user@example.com\",\"password\":\"password\"}" ^
-  -c user_cookies.txt
+  -d "{\"email\":\"user@example.com\",\"password\":\"password\"}"
 
-curl http://127.0.0.1:8000/api/admin/roles/ -b user_cookies.txt
+curl http://127.0.0.1:8000/api/admin/roles/ -H "Authorization: Token <token_user>"
 ```
 
 **Ожидаемый ответ:** `403 Forbidden`
@@ -152,20 +145,22 @@ curl http://127.0.0.1:8000/api/admin/roles/ -b user_cookies.txt
 
 ```bash
 # Получить список ролей
-curl http://127.0.0.1:8000/api/admin/roles/ -b cookies.txt
-# → 200 OK: [{"id":1,"name":"admin"},{"id":2,"name":"manager"},{"id":3,"name":"user"}]
+curl http://127.0.0.1:8000/api/admin/roles/ -H "Authorization: Token %TOKEN%"
 
 # Получить список прав
-curl http://127.0.0.1:8000/api/admin/permissions/ -b cookies.txt
-# → 200 OK: 12 записей (admin — 6, manager — 4, user — 2)
+curl http://127.0.0.1:8000/api/admin/permissions/ -H "Authorization: Token %TOKEN%"
 
-# Создать новое право (требуется CSRF-токен из cookies.txt)
+# Создать новое право
 curl -X POST http://127.0.0.1:8000/api/admin/permissions/ ^
   -H "Content-Type: application/json" ^
-  -H "X-CSRFToken: <токен_из_cookies.txt>" ^
-  -b cookies.txt ^
+  -H "Authorization: Token %TOKEN%" ^
   -d "{\"role\":2,\"resource\":2,\"action\":3}"
-# → 201 Created
+
+# Назначить роль пользователю
+curl -X POST http://127.0.0.1:8000/api/admin/user-roles/ ^
+  -H "Content-Type: application/json" ^
+  -H "Authorization: Token %TOKEN%" ^
+  -d "{\"user\":4,\"role\":3}"
 ```
 
 ### 3.8 Обновление профиля
@@ -173,8 +168,7 @@ curl -X POST http://127.0.0.1:8000/api/admin/permissions/ ^
 ```bash
 curl -X PUT http://127.0.0.1:8000/api/auth/profile/ ^
   -H "Content-Type: application/json" ^
-  -H "X-CSRFToken: <токен_из_cookies.txt>" ^
-  -b cookies.txt ^
+  -H "Authorization: Token %TOKEN%" ^
   -d "{\"first_name\":\"Новое\",\"last_name\":\"Имя\"}"
 ```
 
@@ -184,18 +178,19 @@ curl -X PUT http://127.0.0.1:8000/api/auth/profile/ ^
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/auth/logout/ ^
-  -H "X-CSRFToken: <токен>" ^
-  -b cookies.txt
+  -H "Authorization: Token %TOKEN%"
 ```
 
-**Ожидаемый ответ:** `204 No Content`
+**Ожидаемый ответ:** `200 OK`
+```json
+{"message":"Выход выполнен"}
+```
 
 ### 3.10 Мягкое удаление (soft delete)
 
 ```bash
 curl -X DELETE http://127.0.0.1:8000/api/auth/delete/ ^
-  -H "X-CSRFToken: <токен>" ^
-  -b user_cookies.txt
+  -H "Authorization: Token <token_user>"
 
 # Попытка войти снова
 curl -X POST http://127.0.0.1:8000/api/auth/login/ ^
@@ -205,7 +200,7 @@ curl -X POST http://127.0.0.1:8000/api/auth/login/ ^
 
 **Ожидаемый ответ:** `400 Bad Request`
 ```json
-{"email":["Учетная запись деактивирована."]}
+["Учётная запись деактивирована."]
 ```
 
 ---
@@ -213,38 +208,66 @@ curl -X POST http://127.0.0.1:8000/api/auth/login/ ^
 ## 4. Схема БД (RBAC)
 
 ```
-┌──────────┐     ┌─────────────────────┐     ┌──────────┐
-│   Role   │     │   RolePermission    │     │ Resource │
-│  (Роль)  │────<│  (Право доступа)    │>────│ (Ресурс) │
-└──────────┘     └─────────────────────┘     └──────────┘
-     │                    │
-     │              ┌─────┴──────┐
-     │              │   Action   │
-     │              │ (Действие) │
-     │              └────────────┘
-     │
-┌────┴──────────┐
-│  CustomUser   │
-│(Пользователь) │
-└───────────────┘
+┌─────────────────┐       ┌─────────────────────┐       ┌──────────┐
+│      Role       │       │   RolePermission    │       │ Resource │
+│    (Роль)       │──────<│  (Право доступа)    │>──────│ (Ресурс) │
+├─────────────────┤       ├─────────────────────┤       ├──────────┤
+│ id (PK)         │       │ id (PK)             │       │ id (PK)  │
+│ name (UQ)       │       │ role_id (FK)        │       │ name (UQ)│
+└─────────────────┘       │ resource_id (FK)    │       └──────────┘
+        │                 │ action_id (FK)      │
+        │                 │ UNIQUE(role,res,act)│
+        │                 └──────────┬──────────┘
+        │                            │
+        │                     ┌──────┴──────┐
+        │                     │   Action    │
+        │                     │ (Действие)  │
+        │                     ├─────────────┤
+        │                     │ id (PK)     │
+        │                     │ name (UQ)   │
+        │                     └─────────────┘
+        │
+┌───────┴──────────┐     ┌──────────────────┐
+│   CustomUser     │     │    UserRole      │
+│  (Пользователь)  │────<│ (Роль польз-ля)  │
+├──────────────────┤     ├──────────────────┤
+│ id (PK)          │     │ id (PK)          │
+│ email (UQ)       │     │ user_id (FK)     │
+│ password         │     │ role_id (FK)     │
+│ first_name       │     │ assigned_at      │
+│ last_name        │     │ UNIQUE(user,role)│
+│ is_active        │     └──────────────────┘
+│ is_staff         │
+│ created_at       │     ┌──────────────────┐
+│ updated_at       │     │    AuthToken     │
+└──────────────────┘     │    (Токен)       │
+        │                ├──────────────────┤
+        └───────────────>│ id (PK)          │
+                         │ user_id (FK, UQ) │
+                         │ key (UQ, 64)     │
+                         │ created_at       │
+                         └──────────────────┘
 ```
 
-| Модель | Назначение | Поля |
+| Модель | Назначение | Ключевые поля |
 |---|---|---|
-| **Role** | Роль пользователя | `name` (уникальное) |
+| **CustomUser** | Пользователь (AbstractBaseUser) | `email` (USERNAME_FIELD), `first_name`, `last_name`, `is_active` |
+| **AuthToken** | Токен аутентификации (1:1 с пользователем) | `user` (OneToOne), `key` (hex 64) |
+| **Role** | Роль | `name` (уникальное) |
 | **Resource** | Защищаемый ресурс | `name` (уникальное) |
 | **Action** | Действие над ресурсом | `name` (уникальное) |
 | **RolePermission** | Связка «роль→ресурс→действие» | `role`, `resource`, `action` (unique_together) |
-| **CustomUser** | Пользователь | поля AbstractUser + `role` (FK→Role) |
+| **UserRole** | M2M-связь пользователь↔роль | `user`, `role` (unique_together), `assigned_at` |
 
 ### Алгоритм проверки доступа
 
-1. Запрос → определить пользователя (Django-сессия)
+1. Запрос → извлечь `Authorization: Token <key>` → найти `AuthToken` → получить `user`
 2. Пользователь не определён → **401**
-3. У пользователя нет роли → **403**
-4. Ищем `RolePermission(role, resource, action)` в кастомной БД
-5. Не найдено → **403**
-6. Найдено → доступ разрешён
+3. Найти все `role_id` пользователя через `UserRole`
+4. Ролей нет → **403**
+5. Ищем `RolePermission(role_id IN [...], resource__name, action__name)` в БД
+6. Не найдено → **403**
+7. Найдено → доступ разрешён
 
 ---
 
@@ -252,21 +275,23 @@ curl -X POST http://127.0.0.1:8000/api/auth/login/ ^
 
 ```
 ├── core/                  # Конфигурация Django
-│   ├── settings.py
-│   ├── urls.py            # Корневой роутинг + карта API
-│   └── middleware.py       # 401/403 разграничение
-├── users/                 # Пользователи и аутентификация
-│   ├── models.py           # CustomUser
-│   ├── serializers.py      # Register, Login, Profile
-│   ├── views.py            # Auth-эндпоинты
+│   ├── settings.py         # Без django.contrib.sessions, кастомный TokenAuthentication
+│   ├── urls.py             # Корневой роутинг + карта API
+│   └── middleware.py        # 401/403 разграничение
+├── users/                  # Пользователи и аутентификация
+│   ├── models.py            # CustomUser (AbstractBaseUser), AuthToken
+│   ├── authentication.py    # TokenAuthentication (свой, не DRF)
+│   ├── serializers.py       # Register, Login, Profile
+│   ├── views.py             # Auth-эндпоинты (токены, без сессий)
 │   └── urls.py
-├── access_control/        # Права доступа
-│   ├── models.py           # Role, Resource, Action, RolePermission
-│   ├── permissions.py      # ResourceAccessPermission, IsAdminRole
-│   ├── serializers.py
-│   ├── views.py            # Mock-объекты + Admin CRUD
+├── access_control/         # Права доступа
+│   ├── models.py            # Role, Resource, Action, RolePermission, UserRole
+│   ├── permissions.py       # ResourceAccessPermission (M2M проверка)
+│   ├── serializers.py       # Role, Resource, Action, Permission, UserRole
+│   ├── views.py             # Mock-объекты + Admin CRUD (ViewSet'ы)
 │   ├── urls.py
 │   └── management/commands/seed_data.py
+├── .env                     # Конфигурация (SECRET_KEY, DB_*)
 └── README.md
 ```
 
@@ -279,10 +304,10 @@ curl -X POST http://127.0.0.1:8000/api/auth/login/ ^
 | Метод | URL | Доступ | Описание |
 |---|---|---|---|
 | `POST` | `/api/auth/register/` | Все | Регистрация |
-| `POST` | `/api/auth/login/` | Все | Вход по email+паролю |
-| `POST` | `/api/auth/logout/` | Авторизован | Выход |
-| `GET` `PUT` | `/api/auth/profile/` | Авторизован | Просмотр/редактирование |
-| `DELETE` | `/api/auth/delete/` | Авторизован | Мягкое удаление |
+| `POST` | `/api/auth/login/` | Все | Вход → токен + профиль |
+| `POST` | `/api/auth/logout/` | Токен | Удаление токена |
+| `GET` `PUT` | `/api/auth/profile/` | Токен | Просмотр/редактирование |
+| `DELETE` | `/api/auth/delete/` | Токен | Мягкое удаление |
 
 ### Mock-объекты (проверка доступа)
 
@@ -291,7 +316,7 @@ curl -X POST http://127.0.0.1:8000/api/auth/login/ ^
 | `GET` | `/api/documents/` | document | read |
 | `GET` | `/api/reports/` | report | read |
 
-### Администрирование прав (только admin)
+### Администрирование прав (только admin — роль с доступом к resource=permissions)
 
 | Метод | URL |
 |---|---|
@@ -303,12 +328,20 @@ curl -X POST http://127.0.0.1:8000/api/auth/login/ ^
 | `GET` `PUT` `DELETE` | `/api/admin/actions/{id}/` |
 | `GET` `POST` | `/api/admin/permissions/` |
 | `GET` `PUT` `DELETE` | `/api/admin/permissions/{id}/` |
+| `GET` `POST` | `/api/admin/user-roles/` |
+| `GET` `PUT` `DELETE` | `/api/admin/user-roles/{id}/` |
 
 ---
 
 ## 7. Кастомность (отличие от встроенных механизмов Django/DRF)
 
-- **Аутентификация** — собственные `RegisterView`, `LoginView`, `LogoutView` (не DRF Token/Session из коробки)
-- **Авторизация** — кастомные классы `ResourceAccessPermission`, `IsAdminRole` проверяют права через собственную БД (Role → RolePermission ← Resource + Action), а не через `django.contrib.auth.models.Permission`
-- **Django Admin** — отключен (`django.contrib.admin` удалён из `INSTALLED_APPS`)
-- **401/403** — кастомный `AuthStatusCodeMiddleware` гарантирует правильные HTTP-статусы
+| Компонент | Стандартный подход | Реализация в проекте |
+|---|---|---|
+| **Модель пользователя** | `AbstractUser` (username, сессионные поля) | `AbstractBaseUser` — полностью своя, email как идентификатор |
+| **Аутентификация** | `SessionAuthentication` / DRF `TokenAuthentication` | Собственный `TokenAuthentication` с `AuthToken` (1:1, `secrets.token_hex`) |
+| **Хранение токенов** | DRF `Token` (автоматически создаётся) | `AuthToken` — одна активная сессия, старый токен удаляется при входе |
+| **Авторизация** | `django.contrib.auth.models.Permission` + `Group` | Своя схема: `Role` → `RolePermission(resource, action)` → `UserRole` (M2M) |
+| **Сессии** | `django.contrib.sessions` | **Отключены** — только токены |
+| **CSRF** | `CsrfViewMiddleware` | **Отключён** — не нужен при токен-ауте |
+| **Django Admin** | `django.contrib.admin` | **Отключён** — администрирование через своё API |
+| **401/403** | DRF по умолчанию (403 на всё) | `AuthStatusCodeMiddleware` — 401 для неаутентифицированных, 403 для недостатка прав |

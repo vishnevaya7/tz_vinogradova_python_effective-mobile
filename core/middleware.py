@@ -10,10 +10,11 @@ class AuthStatusCodeMiddleware:
     def __call__(self, request):
         response = self.get_response(request)
 
-        if response.status_code == 403 and not request.user.is_authenticated:
-            return JsonResponse(
-                {'detail': 'Authentication credentials were not provided.'},
-                status=401,
-            )
+        if response.status_code == 403:
+            if not request.user or not request.user.is_authenticated:
+                return JsonResponse(
+                    {'detail': 'Учётные данные не предоставлены.'},
+                    status=401,
+                )
 
         return response

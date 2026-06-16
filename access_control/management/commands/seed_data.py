@@ -1,6 +1,6 @@
 from django.core.management.base import BaseCommand
 
-from access_control.models import Action, Resource, Role, RolePermission
+from access_control.models import Action, Resource, Role, RolePermission, UserRole
 from users.models import CustomUser
 
 
@@ -14,7 +14,7 @@ class Command(BaseCommand):
             roles[name], _ = Role.objects.get_or_create(name=name)
 
         resources = {}
-        for name in ('document', 'report'):
+        for name in ('document', 'report', 'permissions'):
             resources[name], _ = Resource.objects.get_or_create(name=name)
 
         actions = {}
@@ -26,6 +26,7 @@ class Command(BaseCommand):
             'admin': [
                 ('document', 'read'), ('document', 'write'), ('document', 'delete'),
                 ('report', 'read'), ('report', 'write'), ('report', 'delete'),
+                ('permissions', 'read'), ('permissions', 'write'), ('permissions', 'delete'),
             ],
             'manager': [
                 ('document', 'read'), ('document', 'write'),
@@ -56,10 +57,8 @@ class Command(BaseCommand):
             user, created = CustomUser.objects.get_or_create(
                 email=email,
                 defaults={
-                    'username': email,
                     'first_name': first_name,
                     'last_name': last_name,
-                    'role': roles[role_name],
                     'is_active': True,
                 },
             )
@@ -69,5 +68,10 @@ class Command(BaseCommand):
                 self.stdout.write(f'Создан пользователь: {email} ({role_name})')
             else:
                 self.stdout.write(f'Пользователь уже существует: {email}')
+
+            UserRole.objects.get_or_create(
+                user=user,
+                role=roles[role_name],
+            )
 
         self.stdout.write(self.style.SUCCESS('Тестовые данные загружены.'))

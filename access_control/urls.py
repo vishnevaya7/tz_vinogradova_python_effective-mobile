@@ -8,6 +8,7 @@ router.register(r'admin/roles', views.RoleViewSet, basename='role')
 router.register(r'admin/resources', views.ResourceViewSet, basename='resource')
 router.register(r'admin/actions', views.ActionViewSet, basename='action')
 router.register(r'admin/permissions', views.RolePermissionViewSet, basename='permission')
+router.register(r'admin/user-roles', views.UserRoleViewSet, basename='user-role')
 
 urlpatterns = [
     path('', include(router.urls)),

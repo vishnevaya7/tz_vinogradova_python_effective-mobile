@@ -2,7 +2,6 @@ from django.test import TestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APIClient
 
-from access_control.models import Role
 from users.models import CustomUser
 
 
@@ -24,12 +23,33 @@ class AuthTestCase(TestCase):
             'password_repeat': 'qwerty123',
         }
 
+    def _auth_header(self, token):
+        return {'HTTP_AUTHORIZATION': f'Token {token}'}
+
+    def _register(self, email=None, password=None):
+        if email is None:
+            email = self.user_data['email']
+        if password is None:
+            password = self.user_data['password']
+        data = {**self.user_data, 'email': email, 'password': password, 'password_repeat': password}
+        return self.client.post(self.register_url, data)
+
+    def _register_and_login(self, email=None, password=None):
+        self._register(email, password)
+        if email is None:
+            email = self.user_data['email']
+        if password is None:
+            password = self.user_data['password']
+        response = self.client.post(self.login_url, {'email': email, 'password': password})
+        return response
+
     # ── Регистрация ─────────────────────────────────────────
 
     def test_register_success(self):
         response = self.client.post(self.register_url, self.user_data)
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data['email'], 'test@example.com')
+        self.assertIn('message', response.data)
+        self.assertIn('user_id', response.data)
         self.assertTrue(CustomUser.objects.filter(email='test@example.com').exists())
 
     def test_register_password_mismatch(self):
@@ -52,28 +72,23 @@ class AuthTestCase(TestCase):
 
     # ── Login ───────────────────────────────────────────────
 
-    def _register_and_login(self, email=None, password=None):
-        if email is None:
-            email = self.user_data['email']
-        if password is None:
-            password = self.user_data['password']
-        user_data = {**self.user_data, 'email': email, 'password': password, 'password_repeat': password}
-        self.client.post(self.register_url, user_data)
-        return self.client.post(self.login_url, {'email': email, 'password': password})
-
     def test_login_success(self):
-        response = self._register_and_login()
+        self._register()
+        response = self.client.post(self.login_url, {
+            'email': 'test@example.com',
+            'password': 'qwerty123',
+        })
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data['email'], 'test@example.com')
+        self.assertIn('token', response.data)
+        self.assertEqual(response.data['user']['email'], 'test@example.com')
 
     def test_login_wrong_password(self):
-        self.client.post(self.register_url, self.user_data)
+        self._register()
         response = self.client.post(self.login_url, {
             'email': 'test@example.com',
             'password': 'wrong',
         })
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('password', response.data)
 
     def test_login_nonexistent_email(self):
         response = self.client.post(self.login_url, {
@@ -81,26 +96,44 @@ class AuthTestCase(TestCase):
             'password': 'password',
         })
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('email', response.data)
 
     def test_login_deactivated_user(self):
         response = self._register_and_login()
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        token = response.data['token']
+        self.client.delete(self.delete_url, **self._auth_header(token))
 
-        self.client.delete(self.delete_url)
         response = self.client.post(self.login_url, {
             'email': 'test@example.com',
             'password': 'qwerty123',
         })
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('email', response.data)
+
+    def test_login_replace_old_token(self):
+        first = self._register_and_login()
+        first_token = first.data['token']
+        second = self.client.post(self.login_url, {
+            'email': 'test@example.com',
+            'password': 'qwerty123',
+        })
+        second_token = second.data['token']
+        self.assertNotEqual(first_token, second_token)
+
+        response = self.client.get(self.profile_url, **self._auth_header(first_token))
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+        response = self.client.get(self.profile_url, **self._auth_header(second_token))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
     # ── Logout ──────────────────────────────────────────────
 
     def test_logout(self):
-        self._register_and_login()
-        response = self.client.post(self.logout_url)
-        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        response = self._register_and_login()
+        token = response.data['token']
+        response = self.client.post(self.logout_url, **self._auth_header(token))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        response = self.client.get(self.profile_url, **self._auth_header(token))
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_logout_without_auth(self):
         response = self.client.post(self.logout_url)
@@ -109,8 +142,9 @@ class AuthTestCase(TestCase):
     # ── Профиль ─────────────────────────────────────────────
 
     def test_get_profile(self):
-        self._register_and_login()
-        response = self.client.get(self.profile_url)
+        response = self._register_and_login()
+        token = response.data['token']
+        response = self.client.get(self.profile_url, **self._auth_header(token))
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['email'], 'test@example.com')
 
@@ -119,31 +153,35 @@ class AuthTestCase(TestCase):
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_update_profile(self):
-        self._register_and_login()
-        response = self.client.put(self.profile_url, {
-            'first_name': 'Новое',
-            'last_name': 'Имя',
-        })
+        response = self._register_and_login()
+        token = response.data['token']
+        response = self.client.put(
+            self.profile_url,
+            {'first_name': 'Новое', 'last_name': 'Имя'},
+            **self._auth_header(token),
+        )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['first_name'], 'Новое')
         self.assertEqual(response.data['last_name'], 'Имя')
 
     def test_cannot_update_email(self):
-        self._register_and_login()
-        response = self.client.put(self.profile_url, {
-            'first_name': 'Иван',
-            'last_name': 'Петров',
-            'email': 'hacked@example.com',
-        })
+        response = self._register_and_login()
+        token = response.data['token']
+        response = self.client.put(
+            self.profile_url,
+            {'first_name': 'Иван', 'last_name': 'Петров', 'email': 'hacked@example.com'},
+            **self._auth_header(token),
+        )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['email'], 'test@example.com')
 
     # ── Мягкое удаление ─────────────────────────────────────
 
     def test_soft_delete(self):
-        self._register_and_login()
-        response = self.client.delete(self.delete_url)
-        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        response = self._register_and_login()
+        token = response.data['token']
+        response = self.client.delete(self.delete_url, **self._auth_header(token))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         user = CustomUser.objects.get(email='test@example.com')
         self.assertFalse(user.is_active)

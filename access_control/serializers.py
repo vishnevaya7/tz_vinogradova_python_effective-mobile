@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from access_control.models import Action, Resource, Role, RolePermission
+from access_control.models import Action, Resource, Role, RolePermission, UserRole
 
 
 class RoleSerializer(serializers.ModelSerializer):
@@ -29,3 +29,13 @@ class RolePermissionSerializer(serializers.ModelSerializer):
     class Meta:
         model = RolePermission
         fields = ('id', 'role', 'resource', 'action', 'role_name', 'resource_name', 'action_name')
+
+
+class UserRoleSerializer(serializers.ModelSerializer):
+    user_email = serializers.CharField(source='user.email', read_only=True)
+    role_name = serializers.CharField(source='role.name', read_only=True)
+
+    class Meta:
+        model = UserRole
+        fields = ('id', 'user', 'role', 'user_email', 'role_name', 'assigned_at')
+        read_only_fields = ('assigned_at',)

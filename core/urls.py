@@ -11,7 +11,7 @@ def api_root(request):
             'profile': '/api/auth/profile/',
             'delete': '/api/auth/delete/',
         },
-        'mock_resources': {
+        'resources': {
             'documents': '/api/documents/',
             'reports': '/api/reports/',
         },
@@ -20,6 +20,7 @@ def api_root(request):
             'resources': '/api/admin/resources/',
             'actions': '/api/admin/actions/',
             'permissions': '/api/admin/permissions/',
+            'user_roles': '/api/admin/user-roles/',
         },
     })
 

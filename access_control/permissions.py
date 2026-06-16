@@ -1,6 +1,6 @@
 from rest_framework import exceptions, permissions
 
-from access_control.models import RolePermission
+from access_control.models import RolePermission, UserRole
 
 
 class AuthStatusMixin:
@@ -13,12 +13,6 @@ class AuthStatusMixin:
 
 
 class ResourceAccessPermission(permissions.BasePermission):
-    """
-    Проверяет:
-    - пользователь аутентифицирован → иначе 401 (через DRF permission_denied)
-    - у пользователя есть роль → иначе 403
-    - роль имеет разрешение на ресурс и действие → иначе 403
-    """
 
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
@@ -30,22 +24,15 @@ class ResourceAccessPermission(permissions.BasePermission):
         if resource is None:
             return False
 
-        role = request.user.role
-        if role is None:
+        user_role_ids = UserRole.objects.filter(
+            user=request.user,
+        ).values_list('role_id', flat=True)
+
+        if not user_role_ids:
             return False
 
         return RolePermission.objects.filter(
-            role=role,
+            role_id__in=user_role_ids,
             resource__name=resource,
             action__name=action,
         ).exists()
-
-
-class IsAdminRole(permissions.BasePermission):
-    """Доступ только для пользователей с ролью admin."""
-
-    def has_permission(self, request, view):
-        if not request.user or not request.user.is_authenticated:
-            return False
-        role = request.user.role
-        return role is not None and role.name == 'admin'

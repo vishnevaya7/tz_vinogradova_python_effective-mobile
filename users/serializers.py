@@ -1,4 +1,3 @@
-from django.contrib.auth import authenticate
 from rest_framework import serializers
 
 from users.models import CustomUser
@@ -25,7 +24,6 @@ class RegisterSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data.pop('password_repeat')
         password = validated_data.pop('password')
-        validated_data['username'] = validated_data.get('email')
         user = CustomUser.objects.create(**validated_data)
         user.set_password(password)
         user.save()
@@ -43,14 +41,13 @@ class LoginSerializer(serializers.Serializer):
         try:
             user = CustomUser.objects.get(email=email)
         except CustomUser.DoesNotExist:
-            raise serializers.ValidationError({'email': 'Пользователь с таким email не найден.'})
+            raise serializers.ValidationError('Неверный email или пароль.')
 
         if not user.is_active:
-            raise serializers.ValidationError({'email': 'Учетная запись деактивирована.'})
+            raise serializers.ValidationError('Учётная запись деактивирована.')
 
-        user = authenticate(username=user.username, password=password)
-        if user is None:
-            raise serializers.ValidationError({'password': 'Неверный пароль.'})
+        if not user.check_password(password):
+            raise serializers.ValidationError('Неверный email или пароль.')
 
         attrs['user'] = user
         return attrs
@@ -59,5 +56,5 @@ class LoginSerializer(serializers.Serializer):
 class ProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
-        fields = ('id', 'email', 'first_name', 'last_name', 'role')
-        read_only_fields = ('id', 'email', 'role')
+        fields = ('id', 'email', 'first_name', 'last_name', 'is_active', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'email', 'is_active', 'created_at', 'updated_at')

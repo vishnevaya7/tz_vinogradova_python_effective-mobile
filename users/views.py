@@ -1,10 +1,10 @@
-from django.contrib.auth import login, logout
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from access_control.permissions import AuthStatusMixin
-from users.models import CustomUser
+from users.authentication import generate_token
+from users.models import AuthToken, CustomUser
 from users.serializers import LoginSerializer, ProfileSerializer, RegisterSerializer
 
 
@@ -12,6 +12,15 @@ class RegisterView(generics.CreateAPIView):
     queryset = CustomUser.objects.all()
     serializer_class = RegisterSerializer
     permission_classes = (permissions.AllowAny,)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        return Response(
+            {'message': 'Регистрация успешна', 'user_id': user.id},
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class LoginView(APIView):
@@ -21,16 +30,25 @@ class LoginView(APIView):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data['user']
-        login(request, user)
-        return Response(ProfileSerializer(user).data)
+
+        AuthToken.objects.filter(user=user).delete()
+        token = AuthToken.objects.create(user=user, key=generate_token())
+
+        return Response({
+            'token': token.key,
+            'user': ProfileSerializer(user).data,
+        })
 
 
 class LogoutView(AuthStatusMixin, APIView):
     permission_classes = (permissions.IsAuthenticated,)
 
     def post(self, request):
-        logout(request)
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        AuthToken.objects.filter(user=request.user).delete()
+        return Response(
+            {'message': 'Выход выполнен'},
+            status=status.HTTP_200_OK,
+        )
 
 
 class ProfileView(AuthStatusMixin, generics.RetrieveUpdateAPIView):
@@ -46,7 +64,10 @@ class DeleteAccountView(AuthStatusMixin, APIView):
 
     def delete(self, request):
         user = request.user
-        logout(request)
+        AuthToken.objects.filter(user=user).delete()
         user.is_active = False
-        user.save()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        user.save(update_fields=['is_active'])
+        return Response(
+            {'message': 'Аккаунт деактивирован'},
+            status=status.HTTP_200_OK,
+        )
